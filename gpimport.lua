@@ -1,5 +1,5 @@
 -- @description Guitar Pro file importer 
--- @version 0.4.0
+-- @version 0.5.0
 -- @author tommythecat
 -- @about 
 --  + A script for parsing and mapping Guitar Pro (.gp) arrangements cleanly to midi tracks
@@ -11,6 +11,8 @@
 --  + Install: Actions > Show action list > New action > Load ReaScript
 --     - Browse to this file, then assign a shortcut or toolbar button
 -- @changelog
+--  - 0.5.0
+--   + Avoid importing PC events which cause some fx parameters to reset 
 --  - 0.4.0
 --   + Added track selection GUI to select all or specific tracks for import 
 
@@ -112,9 +114,11 @@ local function build_note_track(events, track_name, program, channel)
   local nb = track_name or "Track"
   parts[#parts+1] = "\x00\xFF\x03" .. vlq(#nb) .. nb
 
-  if channel ~= 9 then
-    parts[#parts+1] = "\x00" .. string.char(0xC0 | channel, program & 0x7F)
-  end
+  -- Removed this section because PC type events cause some fx to reset
+  --
+  --if channel ~= 9 then
+  --  parts[#parts+1] = "\x00" .. string.char(0xC0 | channel, program & 0x7F)
+  --end
 
   local last = 0
   for _, ev in ipairs(events) do
