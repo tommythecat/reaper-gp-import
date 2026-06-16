@@ -1,4 +1,10 @@
--- GP Import for REAPER
+-- @description Guitar Pro file importer 
+-- @version 0.1.0
+-- @author tommythecat
+-- @about A script for parsing and mapping Guitar Pro (.gp) arrangements cleanly to midi tracks
+
+-- ---------------------------------------------------------------------------
+
 -- Imports Guitar Pro files (.gp, GP7/GP8 format) as MIDI tracks
 -- No external dependencies - uses Windows PowerShell for unzipping only
 --
@@ -29,7 +35,7 @@ local DYNAMIC_VEL = {
 local TICKS_PER_BEAT = 960
 
 -- ---------------------------------------------------------------------------
--- Pure-Lua MIDI writer
+-- MIDI writer
 -- ---------------------------------------------------------------------------
 
 local function vlq(value)
@@ -148,7 +154,7 @@ local function assemble_midi(tempo_track, note_tracks)
 end
 
 -- ---------------------------------------------------------------------------
--- GPIF XML parser (minimal SAX-style, line-by-line)
+-- GPIF XML parser
 -- ---------------------------------------------------------------------------
 
 local function get_attr(s, name)
@@ -436,7 +442,7 @@ local function parse_gpif(xml_text)
 end
 
 -- ---------------------------------------------------------------------------
--- GP -> MIDI conversion
+-- GP to MIDI conversion
 -- ---------------------------------------------------------------------------
 
 local function gp_to_midi(xml_text)
@@ -585,7 +591,7 @@ local function gp_to_midi(xml_text)
 end
 
 -- ---------------------------------------------------------------------------
--- Unzip helper: uses PowerShell (always available on Windows)
+-- PowerShell unzip helper
 -- ---------------------------------------------------------------------------
 
 local function extract_gpif_via_powershell(gp_path, out_path)
@@ -618,7 +624,7 @@ local function main()
   local ret, gp_path = reaper.GetUserFileNameForRead("", "Select Guitar Pro file (.gp)", "gp")
   if not ret or gp_path == "" then return end
 
-  -- Validate it looks like a zip (GP7/GP8)
+  -- Check it looks like a zip (GP7/GP8)
   local f = io.open(gp_path, "rb")
   if not f then
     reaper.ShowMessageBox("Could not open file:\n" .. gp_path, "GP Import", 0)
@@ -631,7 +637,7 @@ local function main()
     reaper.ShowMessageBox(
       "This does not appear to be a GP7/GP8 file.\n\n" ..
       "Older GP5 binary files are not supported.\n" ..
-      "Songsterr downloads use the GP7/GP8 format (.gp).",
+      "Check file uses the GP7/GP8 format (.gp).",
       "GP Import - Unsupported Format", 0)
     return
   end
@@ -651,7 +657,7 @@ local function main()
     return
   end
 
-  -- Read the XML
+  -- Read XML
   local xf = io.open(tmp_xml, "r")
   if not xf then
     reaper.ShowMessageBox("Failed to read extracted XML.", "GP Import - Error", 0)
