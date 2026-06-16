@@ -1,14 +1,18 @@
 -- @description Guitar Pro file importer 
--- @version 0.1.0
+-- @version 0.4.0
 -- @author tommythecat
 -- @about 
 --  + A script for parsing and mapping Guitar Pro (.gp) arrangements cleanly to midi tracks
 --  + Imports Guitar Pro files (.gp, GP7/GP8 format) as MIDI tracks
 --  + No external dependencies - uses Windows PowerShell for unzipping only
 --  + Supports multiple tracks, tempo changes, time sig changes, ties, drums
+--  + Track selection GUI lets you choose which tracks to import
 -- 
 --  + Install: Actions > Show action list > New action > Load ReaScript
 --     - Browse to this file, then assign a shortcut or toolbar button
+-- @changelog
+--  - 0.4.0
+--   + Added track selection GUI to select all or specific tracks for import 
 
 -- ---------------------------------------------------------------------------
 -- MIDI note durations (ticks at 960 PPQ)
@@ -35,7 +39,6 @@ local TICKS_PER_BEAT = 960
 -- ---------------------------------------------------------------------------
 
 local function vlq(value)
-  -- Encode integer as MIDI variable-length quantity, return as string of bytes
   local bytes = {}
   bytes[1] = value & 0x7F
   value = value >> 7
@@ -59,11 +62,8 @@ local function uint32be(v)
 end
 
 local function build_tempo_track(tempo_events, time_sig_events)
-  -- tempo_events:   list of {tick, bpm}
-  -- time_sig_events: list of {tick, num, den}
   local events = {}
 
-  -- Track name meta
   local name = "Master"
   events[#events+1] = {tick=0, data="\xFF\x03" .. vlq(#name) .. name}
 
@@ -93,15 +93,13 @@ local function build_tempo_track(tempo_events, time_sig_events)
     parts[#parts+1] = vlq(ev.tick - last) .. ev.data
     last = ev.tick
   end
-  parts[#parts+1] = "\x00\xFF\x2F\x00"  -- end of track
+  parts[#parts+1] = "\x00\xFF\x2F\x00"
 
   local payload = table.concat(parts)
   return "MTrk" .. uint32be(#payload) .. payload
 end
 
 local function build_note_track(events, track_name, program, channel)
-  -- events: list of {tick, type="on"|"off", pitch, vel}
-  -- Sort: offs before ons at same tick
   table.sort(events, function(a, b)
     if a.tick ~= b.tick then return a.tick < b.tick end
     local pa = (a.type == "off") and 0 or 1
@@ -111,11 +109,9 @@ local function build_note_track(events, track_name, program, channel)
 
   local parts = {}
 
-  -- Track name meta
   local nb = track_name or "Track"
   parts[#parts+1] = "\x00\xFF\x03" .. vlq(#nb) .. nb
 
-  -- Program change (skip drums on ch 9)
   if channel ~= 9 then
     parts[#parts+1] = "\x00" .. string.char(0xC0 | channel, program & 0x7F)
   end
@@ -133,7 +129,7 @@ local function build_note_track(events, track_name, program, channel)
     end
   end
 
-  parts[#parts+1] = "\x00\xFF\x2F\x00"  -- end of track
+  parts[#parts+1] = "\x00\xFF\x2F\x00"
 
   local payload = table.concat(parts)
   return "MTrk" .. uint32be(#payload) .. payload
@@ -154,7 +150,6 @@ end
 -- ---------------------------------------------------------------------------
 
 local function get_attr(s, name)
-  -- Extract attribute value from a tag string, e.g. get_attr('<Note id="3">', "id") -> "3"
   local v = s:match('%s' .. name .. '%s*=%s*"([^"]*)"')
   if not v then v = s:match('^<[%w:]+%s+' .. name .. '%s*=%s*"([^"]*)"') end
   return v
@@ -165,7 +160,6 @@ local function tag_name(s)
 end
 
 local function split_tokens(line)
-  -- Split a line into tags and text segments
   local tokens = {}
   local pos = 1
   while pos <= #line do
@@ -187,19 +181,18 @@ local function split_tokens(line)
 end
 
 local function parse_gpif(xml_text)
-  local rhythms    = {}   -- id -> ticks
-  local notes      = {}   -- id -> {midi, muted, tie_origin, tie_dest}
-  local beats      = {}   -- id -> {rhythm_ref, note_ids, vel}
-  local voices     = {}   -- id -> [beat_id, ...]
-  local bars       = {}   -- id -> [voice_id, ...]
-  local masterbars = {}   -- list of {bar_ids, time_sig}
-  local tracks     = {}   -- list of {name, program, channel}
-  local tempo_map  = {}   -- bar_idx -> bpm
+  local rhythms    = {}
+  local notes      = {}
+  local beats      = {}
+  local voices     = {}
+  local bars       = {}
+  local masterbars = {}
+  local tracks     = {}
+  local tempo_map  = {}
   local title      = ""
   local artist     = ""
 
-  -- Parser state
-  local stack = {}   -- tag path as list
+  local stack = {}
   local cur = {
     rhythm_id  = nil,
     note_id    = nil,
@@ -218,16 +211,13 @@ local function parse_gpif(xml_text)
   local function apply_text(text)
     local p = path()
 
-    -- Rhythms
     if p == "GPIF/Rhythms/Rhythm/NoteValue" then
       rhythms[cur.rhythm_id].nv = text
 
-    -- Notes
     elseif p == "GPIF/Notes/Note/Properties/Property/Number"
         and cur.prop_name == "Midi" then
       notes[cur.note_id].midi = tonumber(text)
 
-    -- Beats
     elseif p == "GPIF/Beats/Beat/Notes" then
       local ids = {}
       for id in text:gmatch("%-?%d+") do
@@ -238,7 +228,6 @@ local function parse_gpif(xml_text)
     elseif p == "GPIF/Beats/Beat/Dynamic" then
       beats[cur.beat_id].vel = DYNAMIC_VEL[text] or 80
 
-    -- Voices
     elseif p == "GPIF/Voices/Voice/Beats" then
       local ids = {}
       for id in text:gmatch("%-?%d+") do
@@ -247,16 +236,14 @@ local function parse_gpif(xml_text)
       end
       voices[cur.voice_id] = ids
 
-    -- Bars
     elseif p == "GPIF/Bars/Bar/Voices" then
       local ids = {}
       for id in text:gmatch("%-?%d+") do
-        local n = tonumber(id)  -- keep -1 (empty voice slots)
+        local n = tonumber(id)
         if n then ids[#ids+1] = n end
       end
       bars[cur.bar_id] = ids
 
-    -- MasterBars
     elseif p == "GPIF/MasterBars/MasterBar/Bars" then
       local ids = {}
       for id in text:gmatch("%-?%d+") do
@@ -266,7 +253,6 @@ local function parse_gpif(xml_text)
     elseif p == "GPIF/MasterBars/MasterBar/Time" then
       masterbars[#masterbars].time = text
 
-    -- Tracks
     elseif p == "GPIF/Tracks/Track/Name" then
       tracks[#tracks].name = text
     elseif p == "GPIF/Tracks/Track/Sounds/Sound/MIDI/Program" then
@@ -274,7 +260,6 @@ local function parse_gpif(xml_text)
     elseif p == "GPIF/Tracks/Track/MidiConnection/PrimaryChannel" then
       tracks[#tracks].channel = tonumber(text)
 
-    -- Tempo automations
     elseif p == "GPIF/MasterTrack/Automations/Automation/Type" then
       cur.auto_type = text
     elseif p == "GPIF/MasterTrack/Automations/Automation/Bar" then
@@ -285,7 +270,6 @@ local function parse_gpif(xml_text)
         if bpm then tempo_map[cur.auto_bar] = bpm end
       end
 
-    -- Score metadata
     elseif p == "GPIF/Score/Title" then
       title = text
     elseif p == "GPIF/Score/Artist" then
@@ -359,7 +343,6 @@ local function parse_gpif(xml_text)
         ticks = ticks + add
         add   = add // 2
       end
-      -- Apply tuplet (e.g. triplet: 3 notes in space of 2)
       if r.tup_num ~= r.tup_den then
         ticks = math.floor(ticks * r.tup_den / r.tup_num)
       end
@@ -369,14 +352,12 @@ local function parse_gpif(xml_text)
     stack[#stack] = nil
   end
 
-  -- Main parse loop
   for line in xml_text:gmatch("([^\n]*)\n?") do
     local stripped = line:match("^%s*(.-)%s*$")
     if stripped == "" or stripped:sub(1,2) == "<?" or stripped:sub(1,4) == "<!--" then
       goto continue
     end
 
-    -- CDATA: apply content to current path
     local cdata = stripped:match("^<!%[CDATA%[(.-)%]%]>$")
     if cdata then
       local text = cdata:match("^%s*(.-)%s*$")
@@ -384,11 +365,8 @@ local function parse_gpif(xml_text)
       goto continue
     end
 
-    -- Self-closing tags (e.g. <Accidental/>, <Tie origin="true" destination="false"/>)
-    -- These won't have a matching close, handle inline
     if stripped:match("/>%s*$") and not stripped:match("^</") then
       local tname = tag_name(stripped)
-      -- Temporary push/pop to handle as if open+close
       stack[#stack+1] = tname
       local p = path()
       if p == "GPIF/Notes/Note/Tie" then
@@ -406,7 +384,6 @@ local function parse_gpif(xml_text)
       goto continue
     end
 
-    -- Normal tags and text
     local tokens = split_tokens(stripped)
     for _, tok in ipairs(tokens) do
       if tok.type == "tag" then
@@ -438,11 +415,289 @@ local function parse_gpif(xml_text)
 end
 
 -- ---------------------------------------------------------------------------
+-- Track selection GUI
+-- ---------------------------------------------------------------------------
+
+local FONT_SIZE = 16
+local ROW_H     = 26
+local PAD       = 14
+local CB_SIZE   = 13
+
+local function show_track_selector(tracks, title, artist, callback)
+  local n        = #tracks
+  local win_w    = 440
+  local header_h = 70
+  local footer_h = 50
+  local MAX_VIS  = 12
+  local vis = math.min(n, MAX_VIS)
+  local list_h = ROW_H + 8 + vis * ROW_H + PAD
+  local win_h = header_h + list_h + footer_h
+
+  gfx.init(string.format("GP Import - Select Tracks (%d found)", #tracks), win_w, win_h, 0)
+  gfx.setfont(1, "Arial", FONT_SIZE)
+  gfx.setfont(2, "Arial", FONT_SIZE - 2)
+
+  local selected = {}
+  for i = 1, n do selected[i] = true end
+  local scroll   = 0
+  local was_down = false
+
+  local function all_checked()
+    for i = 1, n do if not selected[i] then return false end end
+    return true
+  end
+  local function none_checked()
+    for i = 1, n do if selected[i] then return false end end
+    return true
+  end
+  local function count_selected()
+    local c = 0
+    for i = 1, n do if selected[i] then c = c + 1 end end
+    return c
+  end
+
+  local function draw_checkbox(x, y, checked, indeterminate)
+    if checked or indeterminate then
+      gfx.r, gfx.g, gfx.b = 0.3, 0.55, 0.95
+    else
+      gfx.r, gfx.g, gfx.b = 0.35, 0.35, 0.35
+    end
+    gfx.rect(x, y, CB_SIZE, CB_SIZE, 1)
+    gfx.r, gfx.g, gfx.b = 0.5, 0.5, 0.5
+    gfx.rect(x, y, CB_SIZE, CB_SIZE, 0)
+    if checked then
+      gfx.r, gfx.g, gfx.b = 1, 1, 1
+      gfx.line(x+2, y+6,  x+5, y+10)
+      gfx.line(x+5, y+10, x+11, y+2)
+    elseif indeterminate then
+      gfx.r, gfx.g, gfx.b = 1, 1, 1
+      gfx.line(x+3, y+6, x+10, y+6)
+    end
+  end
+
+  local function finish(cancelled)
+    gfx.quit()
+    if cancelled then return end
+    local chosen = {}
+    for i = 1, n do
+      if selected[i] then chosen[#chosen+1] = i end
+    end
+    if #chosen > 0 then callback(chosen) end
+  end
+
+  local function loop()
+    -- Window closed by OS
+    if gfx.getchar() == -1 then finish(true); return end
+
+    gfx.update()
+
+    -- Background
+    gfx.r, gfx.g, gfx.b, gfx.a = 0.15, 0.15, 0.15, 1
+    gfx.rect(0, 0, win_w, win_h, 1)
+
+    -- Song title
+    gfx.r, gfx.g, gfx.b = 1, 1, 1
+    gfx.setfont(1)
+    local song = (artist ~= "" and title ~= "") and (artist .. " \xe2\x80\x93 " .. title)
+              or (title ~= "" and title)
+              or "Guitar Pro Import"
+    gfx.x, gfx.y = PAD, 14
+    gfx.drawstr(song)
+
+    gfx.r, gfx.g, gfx.b = 0.6, 0.6, 0.6
+    gfx.setfont(2)
+    gfx.x, gfx.y = PAD, 36
+    gfx.drawstr("Select tracks to import")
+
+    gfx.r, gfx.g, gfx.b = 0.28, 0.28, 0.28
+    gfx.line(0, header_h - 1, win_w, header_h - 1)
+
+    -- Select-all row
+    local all_y    = header_h + 4
+    local cb_all_x = PAD
+    local cb_all_y = all_y + (ROW_H - CB_SIZE) // 2
+    local all_on   = all_checked()
+    local all_ind  = (not all_on) and (not none_checked())
+    draw_checkbox(cb_all_x, cb_all_y, all_on, all_ind)
+
+    gfx.r, gfx.g, gfx.b = 0.8, 0.8, 0.8
+    gfx.setfont(1)
+
+    gfx.x = cb_all_x + CB_SIZE + 8
+    gfx.y = all_y + (ROW_H - FONT_SIZE) // 2
+    gfx.drawstr("Select all")
+
+    local count_text =
+    count_selected()
+    .. " / "
+    .. n
+    .. " selected"
+
+    local count_w = gfx.measurestr(count_text)
+    gfx.r, gfx.g, gfx.b = 0.65, 0.65, 0.65
+    gfx.x = win_w - PAD - count_w
+    gfx.y = all_y + (ROW_H - FONT_SIZE) // 2
+    gfx.drawstr(count_text)
+
+    gfx.r, gfx.g, gfx.b = 0.22, 0.22, 0.22
+    gfx.line(PAD, header_h + ROW_H + 4, win_w - PAD, header_h + ROW_H + 4)
+
+    -- Track rows
+    local list_top = header_h + ROW_H + 8
+    scroll = math.max(0, math.min(scroll, n - vis))
+
+    for i = 1, vis do
+      local idx = i + scroll
+      local t   = tracks[idx]
+      if not t then break end
+
+      local ry   = list_top + (i - 1) * ROW_H
+      local cb_x = PAD
+      local cb_y = ry + (ROW_H - CB_SIZE) // 2
+      local mx, my = gfx.mouse_x, gfx.mouse_y
+
+      -- Hover highlight
+      if mx >= 0 and mx < win_w - 8 and my >= ry and my < ry + ROW_H then
+        gfx.r, gfx.g, gfx.b, gfx.a = 1, 1, 1, 0.05
+        gfx.rect(0, ry, win_w, ROW_H, 1)
+        gfx.a = 1
+      end
+
+      draw_checkbox(cb_x, cb_y, selected[idx], false)
+
+      local on = selected[idx]
+      gfx.r, gfx.g, gfx.b = on and 1 or 0.45, on and 1 or 0.45, on and 1 or 0.45
+      gfx.setfont(1)
+      gfx.x = cb_x + CB_SIZE + 8
+      gfx.y = ry + (ROW_H - FONT_SIZE) // 2
+      gfx.drawstr(t.display_name or t.name)
+
+      -- Channel / drum hint
+      local hint = t.channel == 9 and "[drums]" or (t.channel and "ch " .. t.channel or "")
+      if hint ~= "" then
+        gfx.r, gfx.g, gfx.b = 0.45, 0.45, 0.45
+        gfx.setfont(2)
+        local hw = gfx.measurestr(hint)
+        gfx.x = win_w - PAD - 8 - hw
+        gfx.y = ry + (ROW_H - (FONT_SIZE - 2)) // 2
+        gfx.drawstr(hint)
+      end
+    end
+
+    -- Scrollbar
+    if n > MAX_VIS then
+      local sb_x    = win_w - 6
+      local sb_top  = list_top
+      local sb_h    = vis * ROW_H
+      local thumb_h = math.max(20, math.floor(sb_h * vis / n))
+      local thumb_y = sb_top + math.floor((sb_h - thumb_h) * scroll / math.max(1, n - vis))
+      gfx.r, gfx.g, gfx.b = 0.25, 0.25, 0.25
+      gfx.rect(sb_x, sb_top, 4, sb_h, 1)
+      gfx.r, gfx.g, gfx.b = 0.55, 0.55, 0.55
+      gfx.rect(sb_x, thumb_y, 4, thumb_h, 1)
+
+      local wheel = gfx.mouse_wheel
+      if wheel ~= 0 then
+        scroll = math.max(0, math.min(n - vis, scroll - math.floor(wheel / 120)))
+        gfx.mouse_wheel = 0
+      end
+    end
+
+    -- Footer
+    local foot_y = win_h - footer_h
+    gfx.r, gfx.g, gfx.b = 0.28, 0.28, 0.28
+    gfx.line(0, foot_y, win_w, foot_y)
+
+    local btn_w = 90
+    local btn_h = 28
+    local btn_y = foot_y + (footer_h - btn_h) // 2
+    local imp_x = win_w - PAD - btn_w
+    local can_x = imp_x - btn_w - 10
+    local any   = not none_checked()
+
+    -- Cancel button
+    gfx.r, gfx.g, gfx.b = 0.28, 0.28, 0.28
+    gfx.rect(can_x, btn_y, btn_w, btn_h, 1)
+    gfx.r, gfx.g, gfx.b = 0.5, 0.5, 0.5
+    gfx.rect(can_x, btn_y, btn_w, btn_h, 0)
+    gfx.r, gfx.g, gfx.b = 0.85, 0.85, 0.85
+    gfx.setfont(1)
+    local cw = gfx.measurestr("Cancel")
+    gfx.x = can_x + (btn_w - cw) // 2
+    gfx.y = btn_y + (btn_h - FONT_SIZE) // 2
+    gfx.drawstr("Cancel")
+
+    -- Import button
+    if any then
+      gfx.r, gfx.g, gfx.b = 0.22, 0.48, 0.88
+    else
+      gfx.r, gfx.g, gfx.b = 0.22, 0.30, 0.38
+    end
+    gfx.rect(imp_x, btn_y, btn_w, btn_h, 1)
+    gfx.r, gfx.g, gfx.b = any and 0.35 or 0.28, any and 0.58 or 0.35, any and 0.95 or 0.45
+    gfx.rect(imp_x, btn_y, btn_w, btn_h, 0)
+    gfx.r, gfx.g, gfx.b = any and 1 or 0.45, any and 1 or 0.45, any and 1 or 0.45
+    local iw = gfx.measurestr("Import")
+    gfx.x = imp_x + (btn_w - iw) // 2
+    gfx.y = btn_y + (btn_h - FONT_SIZE) // 2
+    gfx.drawstr("Import")
+
+    -- Click handling (rising edge only)
+    local now_down = (gfx.mouse_cap & 1) == 1
+    if now_down and not was_down then
+      local mx, my = gfx.mouse_x, gfx.mouse_y
+
+      -- Cancel button
+      if mx >= can_x and mx < can_x + btn_w and my >= btn_y and my < btn_y + btn_h then
+        finish(true); return
+      end
+
+      -- Import button
+      if any and mx >= imp_x and mx < imp_x + btn_w and my >= btn_y and my < btn_y + btn_h then
+        finish(false); return
+      end
+
+      -- Select-all row
+      if my >= all_y and my < all_y + ROW_H and mx < win_w - 8 then
+        local new_state = all_ind and true or not all_on
+        for i = 1, n do selected[i] = new_state end
+      end
+
+      -- Individual track rows
+      for i = 1, vis do
+        local idx = i + scroll
+        local ry  = list_top + (i - 1) * ROW_H
+        if my >= ry and my < ry + ROW_H and mx < win_w - 8 then
+          if idx >= 1 and idx <= n then
+            selected[idx] = not selected[idx]
+          end
+        end
+      end
+    end
+    was_down = now_down
+
+    -- ESC key
+    if gfx.getchar() == 27 then finish(true); return end
+
+    reaper.defer(loop)
+  end
+
+  reaper.defer(loop)
+end
+
+-- ---------------------------------------------------------------------------
 -- GP to MIDI conversion
 -- ---------------------------------------------------------------------------
 
-local function gp_to_midi(xml_text)
+local function gp_to_midi(xml_text, track_filter)
   local gp = parse_gpif(xml_text)
+
+  -- Build filter set (nil = import all)
+  local filter_set = nil
+  if track_filter then
+    filter_set = {}
+    for _, idx in ipairs(track_filter) do filter_set[idx] = true end
+  end
 
   -- Pre-compute bar start ticks
   local bar_start_ticks = {}
@@ -457,12 +712,11 @@ local function gp_to_midi(xml_text)
   -- Tempo track
   local tempo_events = {}
   for bar_idx, bpm in pairs(gp.tempo_map) do
-    local t = bar_start_ticks[bar_idx + 1]  -- Lua 1-indexed, bar_idx is 0-indexed
+    local t = bar_start_ticks[bar_idx + 1]
     if t then
       tempo_events[#tempo_events+1] = {tick=t, bpm=bpm}
     end
   end
-  -- Ensure there's a tempo at tick 0
   local has_zero = false
   for _, te in ipairs(tempo_events) do
     if te.tick == 0 then has_zero = true; break end
@@ -488,14 +742,18 @@ local function gp_to_midi(xml_text)
 
   local tempo_track = build_tempo_track(tempo_events, time_sig_events)
 
-  -- Assign MIDI channels (0-8 for pitched, 9 for drums, 10-15 for overflow)
+  -- Assign MIDI channels
   local avail_channels = {}
   for c = 0, 15 do if c ~= 9 then avail_channels[#avail_channels+1] = c end end
   local chan_idx = 0
 
-  -- Build one MIDI track per GP track
   local note_tracks = {}
   for track_idx, tinfo in ipairs(gp.tracks) do
+    -- Skip tracks not in the filter
+    if filter_set and not filter_set[track_idx] then
+      goto skip_track
+    end
+
     local is_drum = (tinfo.channel == 9)
     local channel
     if is_drum then
@@ -506,7 +764,7 @@ local function gp_to_midi(xml_text)
     end
 
     local events     = {}
-    local open_notes = {}   -- pitch -> true (currently held open for ties)
+    local open_notes = {}
 
     for mb_idx, mb in ipairs(gp.masterbars) do
       local bar_id = mb.bar_ids[track_idx]
@@ -515,7 +773,7 @@ local function gp_to_midi(xml_text)
       local voice_ids = gp.bars[bar_id]
       if not voice_ids or #voice_ids == 0 then goto next_bar end
 
-      local voice_id = voice_ids[1]   -- use voice 0 only
+      local voice_id = voice_ids[1]
       if voice_id < 0 then goto next_bar end
 
       local beat_ids = gp.voices[voice_id]
@@ -539,20 +797,17 @@ local function gp_to_midi(xml_text)
           pitch = math.max(0, math.min(127, pitch))
 
           if n.tie_dest then
-            -- Continuation of a tie: note is already open, do nothing
+            -- continuation; note already open
           else
-            -- Close any previous note on this pitch
             if open_notes[pitch] then
               events[#events+1] = {tick=abs_tick, type="off", pitch=pitch, vel=0}
               open_notes[pitch] = nil
             end
-            -- Open the note
             events[#events+1] = {tick=abs_tick, type="on", pitch=pitch, vel=vel}
             open_notes[pitch] = true
           end
 
           if not n.tie_origin then
-            -- Note ends at close of this beat
             if open_notes[pitch] then
               events[#events+1] = {tick=abs_tick+dur, type="off", pitch=pitch, vel=0}
               open_notes[pitch] = nil
@@ -569,7 +824,7 @@ local function gp_to_midi(xml_text)
       ::next_bar::
     end
 
-    -- Close any notes still open (safety net)
+    -- Close any notes still open
     local final_tick = (bar_start_ticks[#bar_start_ticks] or 0) + TICKS_PER_BEAT
     for pitch in pairs(open_notes) do
       events[#events+1] = {tick=final_tick, type="off", pitch=pitch, vel=0}
@@ -578,12 +833,14 @@ local function gp_to_midi(xml_text)
     note_tracks[#note_tracks+1] = build_note_track(
       events, tinfo.name, tinfo.program, channel
     )
+
+    ::skip_track::
   end
 
   return assemble_midi(tempo_track, note_tracks),
          gp.title,
          gp.artist,
-         #gp.tracks
+         #note_tracks
 end
 
 -- ---------------------------------------------------------------------------
@@ -591,7 +848,6 @@ end
 -- ---------------------------------------------------------------------------
 
 local function extract_gpif_via_powershell(gp_path, out_path)
-  -- Escape paths for PowerShell (double up single quotes)
   local gp_esc  = gp_path:gsub("'", "''")
   local out_esc = out_path:gsub("'", "''")
 
@@ -620,7 +876,7 @@ local function main()
   local ret, gp_path = reaper.GetUserFileNameForRead("", "Select Guitar Pro file (.gp)", "gp")
   if not ret or gp_path == "" then return end
 
-  -- Check it looks like a zip (GP7/GP8)
+  -- Check zip magic bytes (GP7/GP8)
   local f = io.open(gp_path, "rb")
   if not f then
     reaper.ShowMessageBox("Could not open file:\n" .. gp_path, "GP Import", 0)
@@ -640,7 +896,7 @@ local function main()
 
   -- Extract score.gpif to temp file via PowerShell
   local tempdir = os.getenv("TEMP") or os.getenv("TMP") or "C:\\Temp"
-  local guid = tostring(math.random(1000000,9999999))
+  local guid    = tostring(math.random(1000000, 9999999))
   local tmp_xml = tempdir .. "\\reaper_gp_import_" .. guid .. ".gpif"
   local tmp_mid = tempdir .. "\\reaper_gp_import_" .. guid .. ".mid"
 
@@ -664,40 +920,79 @@ local function main()
   xf:close()
   os.remove(tmp_xml)
 
-  -- Convert to MIDI
-  local midi_bytes, title, artist, n_tracks = gp_to_midi(xml_text)
-  if not midi_bytes then
-    reaper.ShowMessageBox("Conversion failed.", "GP Import - Error", 0)
+  -- Parse for track names / metadata to populate the GUI
+  local gp_meta = parse_gpif(xml_text)
+
+  -- Add numbering for duplicate track names
+  local name_counts = {}
+
+  for _, t in ipairs(gp_meta.tracks) do
+    local name = t.name or "Track"
+    name_counts[name] = (name_counts[name] or 0) + 1
+  end
+
+  local name_seen = {}
+
+  for _, t in ipairs(gp_meta.tracks) do
+    local name = t.name or "Track"
+    if name_counts[name] > 1 then
+      name_seen[name] = (name_seen[name] or 0) + 1
+      t.display_name =
+        string.format(
+          "%s #%d",
+          name,
+          name_seen[name]
+        )
+    else
+      t.display_name = name
+    end
+  end
+
+  if #gp_meta.tracks == 0 then
+    reaper.ShowMessageBox("No tracks found in this file.", "GP Import - Error", 0)
     return
   end
 
-  -- Write MIDI to temp file
-  local mf = io.open(tmp_mid, "wb")
-  if not mf then
-    reaper.ShowMessageBox("Failed to write temporary MIDI file.", "GP Import - Error", 0)
-    return
-  end
-  mf:write(midi_bytes)
-  mf:close()
+  -- Show track selector GUI; everything after this runs in the callback
+  -- because the GUI is driven by reaper.defer (non-blocking)
+  show_track_selector(gp_meta.tracks, gp_meta.title, gp_meta.artist, function(chosen)
 
-  -- Import into REAPER (mode 9 = expand multi-track MIDI into separate tracks)
-  reaper.InsertMedia(tmp_mid, 9)
+    -- Convert only the selected tracks to MIDI
+    local midi_bytes, title, artist, n_tracks = gp_to_midi(xml_text, chosen)
+    if not midi_bytes then
+      reaper.ShowMessageBox("Conversion failed.", "GP Import - Error", 0)
+      return
+    end
 
-  os.remove(tmp_mid)
+    -- Write MIDI to temp file
+    local mf = io.open(tmp_mid, "wb")
+    if not mf then
+      reaper.ShowMessageBox("Failed to write temporary MIDI file.", "GP Import - Error", 0)
+      return
+    end
+    mf:write(midi_bytes)
+    mf:close()
 
-  -- Done
-  local song_name = ""
-  if artist ~= "" and title ~= "" then
-    song_name = artist .. " - " .. title
-  elseif title ~= "" then
-    song_name = title
-  else
-    song_name = gp_path:match("([^/\\]+)$") or gp_path
-  end
+    -- Import into REAPER (mode 9 = expand multi-track MIDI into separate tracks)
+    reaper.InsertMedia(tmp_mid, 9)
+    os.remove(tmp_mid)
 
-  reaper.ShowMessageBox(
-    "Imported: " .. song_name .. "\n" .. n_tracks .. " tracks",
-    "GP Import - Done", 0)
+    -- Done
+    local song_name = ""
+    if artist ~= "" and title ~= "" then
+      song_name = artist .. " - " .. title
+    elseif title ~= "" then
+      song_name = title
+    else
+      song_name = gp_path:match("([^/\\]+)$") or gp_path
+    end
+
+    reaper.ShowMessageBox(
+      "Imported: " .. song_name .. "\n" .. n_tracks .. " track(s)",
+      "GP Import - Done", 0)
+  end)
+
+  -- main() returns here; the defer chain in show_track_selector keeps the GUI alive
 end
 
 main()
