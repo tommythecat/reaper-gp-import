@@ -7,9 +7,7 @@
 
 -- Imports Guitar Pro files (.gp, GP7/GP8 format) as MIDI tracks
 -- No external dependencies - uses Windows PowerShell for unzipping only
---
--- Compatible with files downloaded from Songsterr (GP7/GP8 format)
--- Supports: multiple tracks, tempo changes, time sig changes, ties, drums
+-- Supports multiple tracks, tempo changes, time sig changes, ties, drums
 --
 -- Install: Actions > Show action list > New action > Load ReaScript
 --          Browse to this file, then assign a shortcut or toolbar button
