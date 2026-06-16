@@ -1,16 +1,14 @@
 -- @description Guitar Pro file importer 
 -- @version 0.1.0
 -- @author tommythecat
--- @about A script for parsing and mapping Guitar Pro (.gp) arrangements cleanly to midi tracks
-
--- ---------------------------------------------------------------------------
-
--- Imports Guitar Pro files (.gp, GP7/GP8 format) as MIDI tracks
--- No external dependencies - uses Windows PowerShell for unzipping only
--- Supports multiple tracks, tempo changes, time sig changes, ties, drums
---
--- Install: Actions > Show action list > New action > Load ReaScript
---          Browse to this file, then assign a shortcut or toolbar button
+-- @about 
+--  + A script for parsing and mapping Guitar Pro (.gp) arrangements cleanly to midi tracks
+--  + Imports Guitar Pro files (.gp, GP7/GP8 format) as MIDI tracks
+--  + No external dependencies - uses Windows PowerShell for unzipping only
+--  + Supports multiple tracks, tempo changes, time sig changes, ties, drums
+-- 
+--  + Install: Actions > Show action list > New action > Load ReaScript
+--     - Browse to this file, then assign a shortcut or toolbar button
 
 -- ---------------------------------------------------------------------------
 -- MIDI note durations (ticks at 960 PPQ)
